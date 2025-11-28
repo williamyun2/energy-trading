@@ -1,0 +1,40 @@
+    hour_col = 'HourEnding' if 'HourEnding' in combined.columns else 'Hour Ending'
+    date_col = None
+    if 'Delivery Date' in combined.columns:
+        date_col = 'Delivery Date'
+    elif 'Oper Day' in combined.columns:
+        date_col = 'Oper Day'
+    elif 'OperDay' in combined.columns:
+        date_col = 'OperDay'
+    if date_col is None:
+        raise ValueError("Could not find a date column for hour-ending data")
+    combined[hour_col] = combined[hour_col].astype(str).str.replace('24:00', '00:00')
+    combined['datetime'] = pd.to_datetime(
+        combined[date_col] + ' ' + combined[hour_col],
+        errors='coerce'
+    )
+    combined.loc[combined[hour_col] == '00:00', 'datetime'] += pd.Timedelta(days=1)
+else:
+    # fallback: try parsing first column as datetime
+    combined['datetime'] = pd.to_datetime(combined.iloc[:, 0], errors='coerce')
+
+
+
+
+combined = combined.dropna(subset=['datetime'])
+
+# Calculate system load
+print("\nCalculating ERCOT system load...")
+if 'ERCOT' in combined.columns:
+    system_load = combined[['datetime', 'ERCOT']].copy()
+    system_load.columns = ['datetime', 'system_load_mw']
+else:
+    # Sum all numeric columns (weather zones)
+    numeric_cols = combined.select_dtypes(include=['float64', 'int64']).columns
+    numeric_cols = [c for c in numeric_cols if c != 'datetime']
+    if numeric_cols:
+        combined['system_load_mw'] = combined[numeric_cols].sum(axis=1)
+        system_load = combined[['datetime', 'system_load_mw']].copy()
+    else:
+        print("❌ Could not find load columns!")
+        exit(1)
