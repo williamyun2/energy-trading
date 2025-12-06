@@ -9,3 +9,6 @@ openpyxl
 seaborn
 xgboost
 xarray
+herbie-data
+pyarrow
+
