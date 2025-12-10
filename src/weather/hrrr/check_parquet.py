@@ -288,9 +288,9 @@ def check_parquet_file(filepath):
 
 if __name__ == "__main__":
     # Check your file
-    filepath = r"D:\Users\williamyun\proj\energy_trading\data_processed\weather\hrrr\hrrr_texas_20240101_0600.parquet"
+    # filepath = r"D:\Users\williamyun\proj\energy_trading\data_processed\weather\hrrr\hrrr_texas_20240101_0600.parquet"
     
-    check_parquet_file(filepath)
+    # check_parquet_file(filepath)
 
 
 

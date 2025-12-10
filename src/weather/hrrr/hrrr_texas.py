@@ -2,6 +2,7 @@
 Download HRRR weather forecasts and aggregate to ERCOT load zones.
 Smart mode: checks AWS for new files, then uses local cache for re-runs.
 Automatically deletes GRIB files after processing to save space.
+Resilient: downloads whatever forecast hours are available (18hr for 2017, 48hr for later years).
 """
 
 import os
@@ -65,6 +66,9 @@ def download_hrrr_hour(date, fxx, save_dir, force_download=False):
         save_dir: cache directory
         force_download: if True, always check AWS (initial download)
                        if False, skip AWS if file exists locally (fast mode)
+    
+    Returns:
+        xarray Dataset if successful, None if file doesn't exist
     """
     try:
         # Fast mode: skip AWS check if file exists locally
@@ -110,7 +114,12 @@ def download_hrrr_hour(date, fxx, save_dir, force_download=False):
         return ds
         
     except Exception as e:
-        print(f"Error downloading {date} f{fxx:02d}: {e}")
+        error_str = str(e).lower()
+        # Return None for "file not found" errors (expected for extended forecasts in early years)
+        if "not found" in error_str or "href" in error_str or "404" in error_str:
+            return None
+        # Print other errors
+        print(f"✗ Error f{fxx:02d}: {e}")
         return None
 
 
@@ -257,14 +266,18 @@ def aggregate_to_zones(ds):
 def download_hrrr_day(date, forecast_hours, save_dir, output_dir, force_download=None, keep_grib=False):
     """
     Download HRRR forecasts for a single issue time.
+    Resilient: downloads whatever forecast hours are available.
     
     Args:
         date: datetime of forecast issue time
-        forecast_hours: list of forecast hours (e.g., range(0, 25))
+        forecast_hours: range of forecast hours to try (e.g., range(0, 49))
         save_dir: where to cache GRIB files
         output_dir: where to save parquet files
         force_download: True=always check AWS, False=local only, None=auto-detect (recommended)
         keep_grib: if True, keep GRIB files after processing (default False to save space)
+    
+    Returns:
+        dict with download info: {'date': date, 'hours_downloaded': int, 'status': str}
     """
     # Auto-detect if not specified
     if force_download is None:
@@ -277,19 +290,40 @@ def download_hrrr_day(date, forecast_hours, save_dir, output_dir, force_download
     print(f"\nDownloading HRRR issued {date.strftime('%Y-%m-%d %H:00')} ({mode_msg})")
     
     ds_list = []
+    downloaded_hours = []
+    consecutive_failures = 0
+    
     for fxx in forecast_hours:
         print(f"  f{fxx:02d}...", end='', flush=True)
         ds = download_hrrr_hour(date, fxx, save_dir, force_download)
+        
         if ds is not None:
             ds_list.append(ds)
+            downloaded_hours.append(fxx)
+            consecutive_failures = 0
             print("✓", end='', flush=True)
         else:
+            consecutive_failures += 1
             print("✗", end='', flush=True)
+            
+            # Stop trying if we get 3 consecutive failures after f18
+            # (means we've hit the end of available forecast hours)
+            if fxx > 18 and consecutive_failures >= 3:
+                print(f" (stopping, reached end of available forecasts)")
+                break
+    
     print()  # New line
     
     if not ds_list:
         print(f"No data downloaded for {date}")
-        return
+        return {
+            'date': date.strftime('%Y-%m-%d %H:00'),
+            'hours_downloaded': 0,
+            'hour_range': 'FAILED',
+            'status': 'FAILED - No data'
+        }
+    
+    print(f"  Successfully downloaded: f{min(downloaded_hours):02d}-f{max(downloaded_hours):02d} ({len(downloaded_hours)} hours)")
     
     print(f"  Combining {len(ds_list)} forecast hours...")
     ds_combined = xr.concat(ds_list, dim='valid_time')
@@ -303,13 +337,17 @@ def download_hrrr_day(date, forecast_hours, save_dir, output_dir, force_download
     
     if df_zones is None:
         print(f"Failed to aggregate zones for {date}")
-        return
+        return {
+            'date': date.strftime('%Y-%m-%d %H:00'),
+            'hours_downloaded': len(downloaded_hours),
+            'hour_range': f'f{min(downloaded_hours):02d}-f{max(downloaded_hours):02d}',
+            'status': 'FAILED - Zone aggregation failed'
+        }
     
     # Add forecast metadata
-    df_zones['forecast_issued'] = date
+    df_zones['forecast_issued'] = pd.to_datetime(date).tz_localize('UTC').tz_convert('US/Central').tz_localize(None)
     # Calculate forecast_hour properly (hours since forecast was issued, in local time)
-    df_zones['forecast_hour'] = ((pd.to_datetime(df_zones['datetime']) - pd.to_datetime(date).tz_localize('UTC').tz_convert('US/Central').tz_localize(None)).dt.total_seconds() / 3600).astype(int)
-    
+    df_zones['forecast_hour'] = ((pd.to_datetime(df_zones['datetime']) - pd.to_datetime(df_zones['forecast_issued'])).dt.total_seconds() / 3600).astype(int)
     # Reorder columns
     base_cols = ['datetime', 'forecast_issued', 'forecast_hour', 'zone']
     data_cols = [c for c in df_zones.columns if c not in base_cols]
@@ -328,18 +366,27 @@ def download_hrrr_day(date, forecast_hours, save_dir, output_dir, force_download
     # Delete GRIB files to save space (unless keep_grib=True)
     if not keep_grib:
         cleanup_grib_files(date, save_dir)
+    
+ 
 
+    return {
+    'date': date.strftime('%Y-%m-%d %H:00'),
+    'hours_downloaded': len(downloaded_hours),
+    'hour_range': f'f{min(downloaded_hours):02d}-f{max(downloaded_hours):02d} ({len(downloaded_hours)} hours)',  # ← CHANGED
+    'status': 'SUCCESS'
+    }
 
 def download_hrrr_historical(start_date, end_date, issue_hours, forecast_hours, 
                              save_dir, output_dir, force_download=None, max_workers=4, keep_grib=False):
     """
     Download historical HRRR forecasts with parallel processing.
+    Resilient: automatically downloads whatever forecast hours are available for each date.
     
     Args:
         start_date: start date
         end_date: end date
         issue_hours: hours to issue forecasts (e.g., [6] for 6am only)
-        forecast_hours: forecast horizon (e.g., range(0, 25) for 0-24hr)
+        forecast_hours: forecast horizon to try (e.g., range(0, 49) tries all 0-48hr)
         save_dir: GRIB cache directory
         output_dir: parquet output directory
         force_download: True for initial download, False for re-processing cached data
@@ -359,11 +406,18 @@ def download_hrrr_historical(start_date, end_date, issue_hours, forecast_hours,
     
     total = len(dates_to_download)
     print(f"Downloading HRRR for {total} forecast times using {max_workers} workers...")
+    print(f"Forecast hours: trying f{min(forecast_hours):02d}-f{max(forecast_hours):02d} (downloads what's available)")
     if not keep_grib:
         print("🗑️  GRIB files will be deleted after processing to save space")
     
+    # Create single log file
+    log_file = os.path.join(output_dir, "hrrr_download.log")
+    os.makedirs(output_dir, exist_ok=True)
+    
     # Download in parallel
     completed = 0
+    results = []
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
@@ -375,13 +429,25 @@ def download_hrrr_historical(start_date, end_date, issue_hours, forecast_hours,
             completed += 1
             date = futures[future]
             try:
-                future.result()
+                result = future.result()
+                results.append(result)
                 print(f"[{completed}/{total}] Completed {date.strftime('%Y-%m-%d %H:00')}")
+                
+                # Write to log file immediately (simple format)
+                if result['status'] == 'SUCCESS':
+                    with open(log_file, 'a') as f:
+                        f.write(f"{result['date']} {result['hour_range']}\n")
+                else:
+                    with open(log_file, 'a') as f:
+                        f.write(f"{result['date']} FAILED\n")
+                    
             except Exception as e:
                 print(f"[{completed}/{total}] FAILED {date.strftime('%Y-%m-%d %H:00')}: {e}")
+                with open(log_file, 'a') as f:
+                    f.write(f"{date.strftime('%Y-%m-%d %H:00')} ERROR\n")
     
     print(f"\n✓ Download complete! {completed}/{total} files processed.")
-
+    print(f"📄 Log file: {log_file}")
 
 def combine_parquet_files(input_dir, output_file):
     """Combine multiple daily parquet files"""
@@ -412,26 +478,27 @@ if __name__ == "__main__":
     # keep_grib: False=delete after processing (saves space), True=keep GRIB files
     # download_hrrr_day(
     #     date=datetime(2024, 7, 7, 6, 0),
-    #     forecast_hours=range(0, 25),
+    #     forecast_hours=range(0, 49),
     #     save_dir=SAVE_DIR,
     #     output_dir=OUTPUT_DIR,
     #     force_download=None,
-    #     keep_grib=False  # Delete GRIB after processing
+    #     keep_grib=False
     # )
     
     # Historical download
+    # Resilient: downloads f00-f18 for 2017, f00-f48 for 2018+
     # Estimated: ~50GB parquet for 8.5 years (GRIB files deleted automatically)
     download_hrrr_historical(
         start_date=datetime(2017, 6, 1),
         end_date=datetime(2025, 12, 1),
         issue_hours=[6],
-        forecast_hours=range(0, 19),    
+        forecast_hours=range(0, 49),  # Try f00-f48, downloads what exists
         save_dir=SAVE_DIR,
         output_dir=OUTPUT_DIR,
         force_download=None,
         max_workers=6,
-        keep_grib=False  # Delete GRIB files after processing to save space
+        keep_grib=False
     )
     
-    # Combine files after historical download
-    # combine_parquet_files(OUTPUT_DIR, f"{OUTPUT_DIR}/hrrr_texas_2017_2025_full.parquet")  
+    # Combine files after historical download   
+    # combine_parquet_files(OUTPUT_DIR, f"{OUTPUT_DIR}/hrrr_texas_2017_2025_full.parquet")

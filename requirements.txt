@@ -11,4 +11,4 @@ xgboost
 xarray
 herbie-data
 pyarrow
-
+yfinance
