@@ -2,6 +2,8 @@
 Data Loader - ERCOT Energy Trading Project
 Loads and merges all datasets with caching support
 
+FIXED: Proper deduplication to prevent data leakage
+
 Usage:
     from merge_dataset.loader import load_clean_data
     df = load_clean_data()
@@ -68,8 +70,14 @@ def merge_all_datasets(verbose=True):
     df_dam.loc[df_dam['HE'] == 24, 'datetime'] = df_dam.loc[df_dam['HE'] == 24, 'Delivery Date'] + pd.Timedelta(days=1)
     df_dam = df_dam[df_dam['Settlement Point'] == 'HB_BUSAVG'].copy()
     df_dam = df_dam[['datetime', 'Settlement Point Price']].rename(columns={'Settlement Point Price': 'dam_price'})
+    
+    # 🔧 FIX 1: Deduplicate DAM prices (keep first occurrence)
+    original_dam_len = len(df_dam)
+    df_dam = df_dam.drop_duplicates(subset=['datetime'], keep='first').reset_index(drop=True)
     if verbose:
         print(f"   ✓ Loaded {len(df_dam):,} hourly prices")
+        if original_dam_len > len(df_dam):
+            print(f"   ⚠️  Removed {original_dam_len - len(df_dam):,} duplicate datetimes")
     
     # 2. Natural Gas - Yahoo
     if verbose:
@@ -88,8 +96,14 @@ def merge_all_datasets(verbose=True):
         df_ng['Date'] = pd.to_datetime(df_ng['Date'], utc=True).dt.tz_localize(None)
 
     df_ng = df_ng.rename(columns={'Close': 'ng_price'})[['Date', 'ng_price']].copy()
+    
+    # 🔧 FIX 2: Deduplicate natural gas prices
+    original_ng_len = len(df_ng)
+    df_ng = df_ng.drop_duplicates(subset=['Date'], keep='first').reset_index(drop=True)
     if verbose:
         print(f"   ✓ Loaded {len(df_ng):,} daily prices")
+        if original_ng_len > len(df_ng):
+            print(f"   ⚠️  Removed {original_ng_len - len(df_ng):,} duplicate dates")
     
     # 3. Weather
     if verbose:
@@ -103,17 +117,30 @@ def merge_all_datasets(verbose=True):
         weather_dfs.append(pd.read_parquet(file))
     df_weather = pd.concat(weather_dfs, ignore_index=True)
     df_weather['datetime'] = pd.to_datetime(df_weather['datetime'])
+    
+    # 🔧 FIX 3: Deduplicate weather data (keep first forecast for each datetime/zone)
+    original_weather_len = len(df_weather)
+    df_weather = df_weather.drop_duplicates(subset=['datetime', 'zone'], keep='first').reset_index(drop=True)
     if verbose:
         print(f"   ✓ Loaded {len(df_weather):,} weather records")
+        if original_weather_len > len(df_weather):
+            print(f"   ⚠️  Removed {original_weather_len - len(df_weather):,} duplicate datetime/zone combinations")
     
     # 4. Load Forecasts
     if verbose:
         print("\n4️⃣ Loading Load Forecasts...")
     load_path = PROCESSED_DIR / "ercot" / "historical_load" / "load_forecast_complete.csv"
     df_load = pd.read_csv(load_path)
-    df_load['datetime'] = pd.to_datetime(df_load['deliveryDate'])
+    df_load['datetime'] = pd.to_datetime(df_load['datetime'])
+    
+    # 🔧 FIX 4: CRITICAL - Deduplicate load forecasts (keep first forecast for each datetime)
+    # This is the main cause of the 25M duplicate rows!
+    original_load_len = len(df_load)
+    df_load = df_load.drop_duplicates(subset=['datetime'], keep='first').reset_index(drop=True)
     if verbose:
         print(f"   ✓ Loaded {len(df_load):,} forecasts")
+        if original_load_len > len(df_load):
+            print(f"   ⚠️  Removed {original_load_len - len(df_load):,} duplicate datetimes (CRITICAL FIX!)")
     
     # 5. Merge
     if verbose:
@@ -141,21 +168,36 @@ def merge_all_datasets(verbose=True):
         df_load['system_load_forecast'] = pd.to_numeric(df_load['systemTotal'], errors='coerce')
     df_merged = df_merged.merge(df_load[['datetime', 'system_load_forecast']], on='datetime', how='left')
     
+    # 🔧 FIX 5: Final safety check - ensure no duplicates in merged data
+    original_merged_len = len(df_merged)
+    df_merged = df_merged.drop_duplicates(subset=['datetime'], keep='first').reset_index(drop=True)
+    if verbose and original_merged_len > len(df_merged):
+        print(f"   ⚠️  Final dedup: Removed {original_merged_len - len(df_merged):,} duplicate rows")
+    
     df_merged = df_merged.drop('date', axis=1).sort_values('datetime').reset_index(drop=True)
     
     if verbose:
         print(f"\n✓ Merge complete! Shape: {df_merged.shape}")
+        print(f"   Expected ~{8.5*365*24:,.0f} rows for 8.5 years of hourly data")
+        print(f"   Actual: {len(df_merged):,} rows")
+        
+        # Verify no duplicates
+        n_duplicates = df_merged.duplicated(subset=['datetime']).sum()
+        if n_duplicates > 0:
+            print(f"   ❌ WARNING: Still have {n_duplicates:,} duplicate datetimes!")
+        else:
+            print(f"   ✅ No duplicate datetimes")
+        
         missing = df_merged.isnull().sum()
         if missing.sum() > 0:
-            print(f"Missing values:")
+            print(f"\nMissing values:")
             for col in missing[missing > 0].index:
                 print(f"  {col}: {missing[col]:,} ({missing[col]/len(df_merged)*100:.1f}%)")
     
     return df_merged
 
-
 def load_clean_data(verbose=True):
-    """Load clean data ready for modeling"""
+    """Load clean data ready for modeling with smart missing data handling"""
     if verbose:
         print("="*80)
         print("LOADING CLEAN DATA FOR MODELING")
@@ -169,17 +211,59 @@ def load_clean_data(verbose=True):
         print("="*80)
         print(f"Before: {len(df):,} rows")
     
-    df_clean = df.dropna()
+    # Smart missing data handling instead of aggressive dropna()
+    # 1. Drop rows missing critical columns (target and key features)
+    critical_cols = ['dam_price', 'ng_price', 'system_load_forecast']
+    df_clean = df.dropna(subset=critical_cols)
     
     if verbose:
-        print(f"After dropna(): {len(df_clean):,} rows")
-        print(f"Dropped: {len(df) - len(df_clean):,} rows")
+        print(f"After dropping rows missing critical columns: {len(df_clean):,} rows")
+        print(f"  Dropped: {len(df) - len(df_clean):,} rows with missing dam_price, ng_price, or load_forecast")
+    
+    # 2. Impute weather data (forward fill, then backward fill for any remaining)
+    weather_cols = [c for c in df_clean.columns if any(x in c for x in ['temp_f', 'wind_speed', 'solar_radiation', 'relative_humidity'])]
+    
+    if weather_cols:
+        # Count missing before imputation
+        missing_before = df_clean[weather_cols].isnull().sum().sum()
+        
+        # Forward fill (use previous hour's weather)
+        df_clean[weather_cols] = df_clean[weather_cols].fillna(method='ffill')
+        
+        # Backward fill for any remaining (start of dataset)
+        df_clean[weather_cols] = df_clean[weather_cols].fillna(method='bfill')
+        
+        missing_after = df_clean[weather_cols].isnull().sum().sum()
+        
+        if verbose and missing_before > 0:
+            print(f"  Imputed {missing_before - missing_after:,} missing weather values using forward/backward fill")
+    
+    # 3. Final check - drop any rows still missing data (should be very few)
+    rows_before_final = len(df_clean)
+    df_clean = df_clean.dropna()
+    rows_dropped_final = rows_before_final - len(df_clean)
+    
+    if verbose:
+        if rows_dropped_final > 0:
+            print(f"  Final cleanup: dropped {rows_dropped_final:,} rows still missing data")
+        print(f"\nAfter all cleaning: {len(df_clean):,} rows")
+        print(f"Total dropped: {len(df) - len(df_clean):,} rows ({(len(df) - len(df_clean))/len(df)*100:.1f}%)")
+        
+        # Final duplicate check
+        n_duplicates = df_clean.duplicated(subset=['datetime']).sum()
+        if n_duplicates > 0:
+            print(f"   ❌ WARNING: Clean data has {n_duplicates:,} duplicate datetimes!")
+        else:
+            print(f"   ✅ No duplicate datetimes in clean data")
+        
         if df_clean.isnull().sum().sum() == 0:
             print("\n✅ CLEAN DATA READY!")
             print(f"   {len(df_clean):,} rows × {len(df_clean.columns)} columns")
             print(f"   {df_clean['datetime'].min()} to {df_clean['datetime'].max()}")
+            print(f"   Data retention: {len(df_clean)/len(df)*100:.1f}%")
     
     return df_clean
+
 
 
 def clear_cache():

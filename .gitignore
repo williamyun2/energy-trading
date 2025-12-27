@@ -5,3 +5,13 @@ results/
 1_ercot_token.py
 1_download_load_forecast_combined.py
 1_download_load_forecast.py
+
+
+.claude/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
