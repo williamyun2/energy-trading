@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 import os
 
 # Hard-coded project directories
-SRC_DIR = r"D:\Users\williamyun\proj\energy_trading\src\fuel\NG"
-INPUT_DIR = r"D:\Users\williamyun\proj\energy_trading\input_data\fuel\NG"
-PROCESSED_DIR = r"D:\Users\williamyun\proj\energy_trading\data_processed\fuel\NG"
+SRC_DIR = r"D:\Users\williamyun\proj\power_trading\src\fuel\NG"
+INPUT_DIR = r"D:\Users\williamyun\proj\power_trading\input_data\fuel\NG"
+PROCESSED_DIR = r"D:\Users\williamyun\proj\power_trading\data_processed\fuel\NG"
 
 """
 ===============================================================================

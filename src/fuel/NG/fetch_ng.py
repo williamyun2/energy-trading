@@ -13,9 +13,9 @@ import os
 import sys
 
 # Hard-coded project directories
-SRC_DIR = r"D:\Users\williamyun\proj\energy_trading\src\fuel\NG"
-INPUT_DIR = r"D:\Users\williamyun\proj\energy_trading\input_data\fuel\NG"
-PROCESSED_DIR = r"D:\Users\williamyun\proj\energy_trading\data_processed\fuel\NG"
+SRC_DIR = r"D:\Users\williamyun\proj\power_trading\src\fuel\NG"
+INPUT_DIR = r"D:\Users\williamyun\proj\power_trading\input_data\fuel\NG"
+PROCESSED_DIR = r"D:\Users\williamyun\proj\power_trading\data_processed\fuel\NG"
 
 class NGPriceFetcher:
     """
@@ -259,14 +259,14 @@ def main():
     print("\n--- Fetching from FRED (recommended for quick start) ---")
     df_fred = fetcher.fetch_and_save(
         source='fred',
-        start_date='2017-01-01'
+        start_date='2010-12-01'
     )
     
     # Optionally also fetch from Yahoo Finance for comparison
     print("\n\n--- Fetching from Yahoo Finance (futures, for comparison) ---")
     df_yahoo = fetcher.fetch_and_save(
         source='yahoo',
-        start_date='2017-01-01'
+        start_date='2010-12-01'
     )
     
     # If you have EIA API key, uncomment below:
