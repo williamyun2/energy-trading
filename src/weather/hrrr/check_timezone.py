@@ -5,7 +5,7 @@ from datetime import datetime
 
 # Load one raw HRRR file to check timezone
 date = datetime(2024, 7, 7, 6, 0)
-save_dir = r"D:\Users\williamyun\proj\energy_trading\input_data\weather"
+save_dir = r"D:\Users\williamyun\proj\power_trading\input_data\weather"
 
 print("Loading raw HRRR data...")
 H = Herbie(date, model='hrrr', product='sfc', fxx=18, save_dir=save_dir)

@@ -1,6 +1,6 @@
 import pandas as pd
 
-filepath = r"D:\Users\williamyun\proj\energy_trading\data_processed\weather\hrrr\hrrr_texas_20240101_0600.parquet"
+filepath = r"D:\Users\williamyun\proj\power_trading\data_processed\weather\hrrr\hrrr_texas_20240101_0600.parquet"
 
 df = pd.read_parquet(filepath)
 
@@ -12,7 +12,7 @@ print(houston.to_string(index=False))
 
 
 
-filepath = r"D:\Users\williamyun\proj\energy_trading\data_processed\weather\hrrr\hrrr_texas_20240707_0600.parquet"
+filepath = r"D:\Users\williamyun\proj\power_trading\data_processed\weather\hrrr\hrrr_texas_20240707_0600.parquet"
 
 df = pd.read_parquet(filepath)
 

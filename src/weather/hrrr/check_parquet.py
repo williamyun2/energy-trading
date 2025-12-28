@@ -294,7 +294,7 @@ if __name__ == "__main__":
 
 
 
-    filepath = r"D:\Users\williamyun\proj\energy_trading\data_processed\weather\hrrr\hrrr_texas_20240707_0600.parquet"
+    filepath = r"D:\Users\williamyun\proj\power_trading\data_processed\weather\hrrr\hrrr_texas_20240707_0600.parquet"
     
     check_parquet_file(filepath)
 
